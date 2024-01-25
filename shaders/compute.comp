@@ -1,0 +1,559 @@
+#version 460 core
+
+uniform uint time_seed;
+uniform uvec2 dims;
+uniform vec3 camera_position;
+uniform mat4 view;
+uniform float FOV;
+
+const float PI=3.1415926f;
+const float EPS=.001f;
+const int LOOP_MAX=1000;
+const float roussian_roulette=0.8;
+const int spp=1;
+const uint BVH_MAX_TRI=3;
+
+struct Material
+{
+    vec3 albedo;
+    float metallic;
+    float roughness;
+};
+
+struct Point
+{
+    vec3 position;
+    vec3 normal;
+};
+
+struct Triangle
+{
+    Point point[3];
+    vec3 normal;
+    int material_id;
+    vec3 e1,e2;
+};
+
+struct BVH
+{
+    vec3 pos_max;
+    int triangle_num;
+    vec3 pos_min;
+    int hit_id;
+    int miss_id;
+    int triangle_list[BVH_MAX_TRI];
+};
+
+layout(local_size_x=16,local_size_y=16,local_size_z=1)in;
+layout(rgba32f,binding=0)uniform image2D color_out;
+layout(rgba32f,binding=1)uniform image2D normal_out;
+layout(rgba32f,binding=2)uniform image2D position_out;
+
+layout(std430,binding=3)buffer triangle_buffer
+{
+    int triangle_counts;
+    Triangle triangles[];
+};
+
+layout(std430,binding=4)buffer light_buffer
+{
+    int light_counts;
+    float light_area;
+    int lights[];
+};
+
+layout(std430,binding=5)buffer material_buffer
+{
+    int material_counts;
+    Material materials[];
+};
+
+layout(std430,binding=6)buffer BVH_buffer
+{
+    BVH bvhs[];
+};
+
+float getRandom(inout uint state)
+{
+    state^=state<<13;
+    state^=state>>17;
+    state^=state<<5;
+    return float(state)/0xffffffffU;
+}
+
+vec3 inverseVec3(vec3 dir)
+{
+    vec3 dir_inv;
+    
+    if(dir.x==0.)
+    dir_inv.x=0.;
+    else
+    dir_inv.x=1./dir.x;
+    
+    if(dir.y==0.)
+    dir_inv.y=0.;
+    else
+    dir_inv.y=1./dir.y;
+    
+    if(dir.z==0.)
+    dir_inv.z=0.;
+    else
+    dir_inv.z=1./dir.z;
+    
+    return dir_inv;
+}
+
+struct Ray
+{
+    vec3 origin;
+    vec3 direction;
+    vec3 direction_inv;
+};
+struct Intersect
+{
+    vec3 position;
+    float dis;
+    vec3 normal;
+    int material_id;
+    bool happened;
+};
+Intersect intersectTriangle(Ray ray,int triangle_id)
+{
+    Intersect inter;
+    inter.happened=false;
+    inter.normal=vec3(0.);
+    
+    Triangle triangle=triangles[triangle_id];
+    if(dot(ray.direction,triangle.normal)>EPS)
+    {
+        return inter;
+    }
+    
+    vec3 s1=cross(ray.direction,triangle.e2);
+    float det=dot(s1,triangle.e1);
+    if(abs(det)==0.)
+    {
+        return inter;
+    }
+    
+    float det_inv=1.f/det;
+    vec3 s=ray.origin-triangle.point[0].position;
+    vec3 s2=cross(s,triangle.e1);
+    
+    float t=dot(s2,triangle.e2)*det_inv;
+    float b1=dot(s1,s)*det_inv;
+    float b2=dot(s2,ray.direction)*det_inv;
+    
+    float b0=1.f-b1-b2;
+    if(t<-EPS||b0<-EPS||b1<-EPS||b2<-EPS)
+    {
+        return inter;
+    }
+    
+    inter.normal=triangle.point[0].normal*b0+triangle.point[1].normal*b1+triangle.point[2].normal*b2;
+    
+    if(dot(ray.direction,inter.normal)>0.0)
+    {
+        return inter;
+    }
+    inter.dis=t;
+    inter.happened=true;
+    inter.material_id=triangle.material_id;
+    inter.position=ray.origin+t*ray.direction;
+    
+    return inter;
+}
+
+Intersect getintersect(Ray ray)
+{
+    Intersect final_inter;
+    final_inter.happened=false;
+    final_inter.dis=1.e6;
+    final_inter.normal=vec3(0.);
+    for(int i=0;i<triangle_counts.x;i++)
+    {
+        Intersect inter=intersectTriangle(ray,i);
+        if(inter.happened==true&&inter.dis<final_inter.dis)
+        final_inter=inter;
+    }
+    return final_inter;
+}
+
+bool is_intersect(Ray ray,uint bvh_id)
+{
+    BVH bvh=bvhs[bvh_id];
+    vec3 tmin=(bvh.pos_min-ray.origin)*ray.direction_inv;
+    vec3 tmax=(bvh.pos_max-ray.origin)*ray.direction_inv;
+    
+    if(ray.direction.x<0.f)
+    {
+        float temp=tmin.x;
+        tmin.x=tmax.x;
+        tmax.x=temp;
+    }
+    if(ray.direction.y<0.f)
+    {
+        float temp=tmin.y;
+        tmin.y=tmax.y;
+        tmax.y=temp;
+    }
+    if(ray.direction.z<0.f)
+    {
+        float temp=tmin.z;
+        tmin.z=tmax.z;
+        tmax.z=temp;
+    }
+    
+    float t_enter=max(tmin.x,max(tmin.y,tmin.z));
+    float t_exit=min(tmax.x,min(tmax.y,tmax.z));
+    
+    if(ray.direction.x==0.f)
+    {
+        if(ray.origin.x>bvh.pos_max.x+EPS||ray.origin.x<bvh.pos_min.x-EPS)
+        return false;
+    }
+    if(ray.direction.y==0.f)
+    {
+        if(ray.origin.y>bvh.pos_max.y+EPS||ray.origin.y<bvh.pos_min.y-EPS)
+        return false;
+    }
+    if(ray.direction.z==0.f)
+    {
+        if(ray.origin.z>bvh.pos_max.z+EPS||ray.origin.z<bvh.pos_min.z-EPS)
+        return false;
+    }
+    
+    if(ray.direction.x==0.f)
+    {
+        if(ray.direction.y==0.f)
+        {
+            t_enter=tmin.z;
+            t_exit=tmax.z;
+        }
+        else if(ray.direction.z==0.f)
+        {
+            t_enter=tmin.y;
+            t_exit=tmax.y;
+        }
+        else
+        {
+            t_enter=max(tmin.y,tmin.z);
+            t_exit=min(tmax.y,tmax.z);
+        }
+    }
+    else if(ray.direction.y==0.f)
+    {
+        if(ray.direction.z==0.f)
+        {
+            t_enter=tmin.x;
+            t_exit=tmax.x;
+        }
+        else
+        {
+            t_enter=max(tmin.x,tmin.z);
+            t_exit=min(tmax.x,tmax.z);
+        }
+    }
+    else if(ray.direction.z==0.f)
+    {
+        t_enter=max(tmin.x,tmin.y);
+        t_exit=min(tmax.x,tmax.y);
+    }
+    
+    if(t_enter>t_exit+EPS||t_exit<-EPS)
+    return false;
+    else
+    return true;
+}
+
+Intersect get_intersect_BVH(Ray ray)
+{
+    Intersect final_inter;
+    final_inter.happened=false;
+    final_inter.dis=1.e6;
+    final_inter.normal=vec3(0.);
+    
+    uint bvh_id=0;
+    while(bvh_id!=-1)
+    {
+        BVH bvh=bvhs[bvh_id];
+        if(is_intersect(ray,bvh_id))
+        {
+            for(int i=0;i<bvh.triangle_num;i++)
+            {
+                Intersect inter=intersectTriangle(ray,bvh.triangle_list[i]);
+                if(inter.happened==true&&inter.dis<final_inter.dis)
+                final_inter=inter;
+            }
+            bvh_id=bvh.hit_id;
+        }
+        else
+        {
+            bvh_id=bvh.miss_id;
+        }
+    }
+    
+    return final_inter;
+}
+
+Intersect sampleLight(Intersect inter,inout uint state)
+{
+    float rand=getRandom(state);
+    int light_id=int(rand*light_counts);
+    Triangle light_triangle=triangles[light_id];
+    
+    float b0=getRandom(state);
+    float b1=getRandom(state);
+    if(b1>b0)
+    b1-=b0;
+    else
+    b0-=b1;
+    float b2=1.-b0-b1;
+    
+    vec3 sample_position=b0*light_triangle.point[0].position+b1*light_triangle.point[1].position+b2*light_triangle.point[2].position;
+    float light_distance=length(sample_position-inter.position);
+    vec3 light_direction=normalize(sample_position-inter.position);
+    
+    Intersect inter_light;
+    inter_light.happened=false;
+    inter_light.normal=vec3(0.);
+    if(dot(light_direction,inter.normal)<EPS)
+    {
+        return inter_light;
+    }
+    
+    Ray ray;
+    ray.origin=inter.position;
+    ray.direction=light_direction;
+    ray.direction_inv=inverseVec3(ray.direction);
+    
+    Intersect shadow_check=get_intersect_BVH(ray);
+    if(shadow_check.dis<light_distance-EPS)
+    {
+        return inter_light;
+    }
+    
+    vec3 sample_normal=b0*light_triangle.point[0].normal+b1*light_triangle.point[1].normal+b2*light_triangle.point[2].normal;
+    inter_light.dis=light_distance;
+    inter_light.happened=true;
+    inter_light.material_id=0;
+    inter_light.normal=sample_normal;
+    inter_light.position=sample_position;
+    return inter_light;
+}
+
+float DistributionGGX(vec3 N,vec3 H,float roughness)
+{
+    float a=roughness*roughness;
+    float a2=a*a;
+    float NdotH=max(dot(N,H),0.);
+    float NdotH2=NdotH*NdotH;
+    
+    float nom=a2;
+    float denom=(NdotH2*(a2-1.)+1.);
+    denom=PI*denom*denom;
+    
+    return nom/denom;
+}
+
+float GeometrySchlickGGX(float NdotV,float roughness)
+{
+    float r=(roughness+1.);
+    float k=(r*r)/8.;
+    float nom=max(NdotV,0.);
+    float denom=NdotV*(1.-k)+k;
+    
+    return nom/denom;
+}
+
+float GeometrySmith(vec3 N,vec3 V,vec3 L,float roughness)
+{
+    float NdotV=max(dot(N,V),0.);
+    float NdotL=max(dot(N,L),0.);
+    float ggx2=GeometrySchlickGGX(NdotV,roughness);
+    float ggx1=GeometrySchlickGGX(NdotL,roughness);
+    
+    return ggx1*ggx2;
+}
+
+vec3 fresnelSchlick(float cosTheta,vec3 F0)
+{
+    return F0+(1.-F0)*pow(clamp(1.-cosTheta,0.,1.),5.);
+}
+
+vec3 getBRDF(vec3 w_in,vec3 w_out,vec3 N,int material_id)
+{
+    vec3 albedo=materials[material_id].albedo;
+    float metallic=materials[material_id].metallic;
+    float roughness=materials[material_id].roughness;
+    
+    // Specular
+    vec3 F0=vec3(.04);
+    F0=mix(F0,materials[material_id].albedo,metallic);
+    vec3 H=normalize(w_in+w_out);
+    vec3 F=fresnelSchlick(max(dot(w_out,H),0.),F0);
+    float D=DistributionGGX(N,H,roughness);
+    float G=GeometrySmith(N,w_out,w_in,roughness);
+    vec3 specular=F*D*G;
+    specular/=4.*max(dot(w_out,N),0.)*max(dot(w_in,N),0.)+.00001;
+    
+    // Diffuse
+    vec3 kD=(1.-F)*(1.-metallic);
+    vec3 diffuse=kD*albedo/PI;
+    
+    return diffuse+specular;
+}
+
+vec3 getDirLight(Intersect inter,Intersect inter_light,vec3 w_out)
+{
+    vec3 dir=normalize(inter_light.position-inter.position);
+    vec3 brdf=getBRDF(w_out,dir,inter.normal,inter.material_id);
+    float dis=length(inter_light.position-inter.position);
+    vec3 light_dir=materials[0].albedo*brdf*max(dot(dir,inter.normal),0.)*max(dot(-dir,inter_light.normal),0.);
+    light_dir/=dis*dis;
+    return light_dir*light_area;
+}
+
+vec3 importanceSample(vec3 N,inout uint state,float roughness)
+{
+    float a=roughness*roughness;
+    vec2 Xi;
+    Xi.x=getRandom(state);
+    Xi.y=getRandom(state);
+    
+    float phi=2.*PI*Xi.x;
+    float cosTheta=sqrt((1.-Xi.y)/(1.+(a*a-1.)*Xi.y));
+    float sinTheta=sqrt(1.-cosTheta*cosTheta);
+    
+    vec3 H;
+    H.x=cos(phi)*sinTheta;
+    H.y=sin(phi)*sinTheta;
+    H.z=cosTheta;
+    
+    vec3 up=abs(N.z)<.999?vec3(0.,0.,1.):vec3(1.,0.,0.);
+    vec3 tangent=normalize(cross(up,N));
+    vec3 bitangent=cross(N,tangent);
+    
+    vec3 sampleVec=tangent*H.x+bitangent*H.y+N*H.z;
+    return normalize(sampleVec);
+}
+
+vec3 getAttenuation(vec3 w_in,vec3 w_out,vec3 N,int material_id)
+{
+    vec3 albedo=materials[material_id].albedo;
+    float metallic=materials[material_id].metallic;
+    float roughness=materials[material_id].roughness;
+    
+    // Specular
+    vec3 F0=vec3(.04);
+    F0=mix(F0,materials[material_id].albedo,materials[material_id].metallic);
+    vec3 H=normalize(w_in+w_out);
+    vec3 F=fresnelSchlick(max(dot(w_out,H),0.),F0);
+    float D=DistributionGGX(N,H,roughness);
+    float G=GeometrySmith(N,w_out,w_in,roughness);
+    
+    float VdotH=max(dot(w_out,H),0.);
+    float NdotH=max(dot(N,H),0.);
+    float NdotV=max(dot(N,w_out),0.);
+    vec3 specular=(F*G*VdotH)/(NdotH*NdotV);
+    
+    // Diffuse
+    vec3 kD=(1.-F)*(1.-metallic);
+    float NdotL=max(dot(N,w_in),0.);
+    vec3 diffuse=kD*albedo/PI;
+    diffuse*=4.*VdotH*NdotL;
+    diffuse/=D*NdotH;
+    
+    return specular+diffuse;
+}
+
+void main(void)
+{
+    if(gl_GlobalInvocationID.x>=dims.x||gl_GlobalInvocationID.y>=dims.y)
+    return;
+    
+    ivec2 pixel_coords=ivec2(gl_GlobalInvocationID.xy);
+    
+    uint x_pixel=pixel_coords.x;
+    uint y_pixel=pixel_coords.y;
+    
+    float rand_x=getRandom(x_pixel);
+    float rand_y=getRandom(y_pixel);
+    uint state=time_seed*x_pixel*y_pixel;
+    
+    vec3 light_total=vec3(0.);
+    for(int iter=0;iter<spp;iter++)
+    {
+        float x_shift=getRandom(state);
+        float y_shift=getRandom(state);
+        
+        vec2 pixel_pos=(vec2(pixel_coords)+vec2(x_shift,y_shift))/float(dims.y)*2.-vec2(float(dims.x)/float(dims.y),1.);
+        vec3 dir=vec3(tan(.5*FOV)*pixel_pos.x,tan(.5*FOV)*pixel_pos.y,-1.);
+        dir=mat3(view)*dir;
+        
+        Ray ray;
+        ray.origin=camera_position;
+        ray.direction=normalize(dir);
+        ray.direction_inv=inverseVec3(ray.direction);
+        
+        vec3 light=vec3(0.);
+        vec3 attenuation=vec3(1.);
+        
+        Intersect inter=get_intersect_BVH(ray);
+        vec4 normal_depth=vec4(inter.normal,inter.dis);
+        vec4 pos_out=vec4(inter.position,1.);
+        if(inter.happened==false)
+        pos_out.w=0.;
+        
+        imageStore(normal_out,pixel_coords,normal_depth);
+        imageStore(position_out,pixel_coords,pos_out);
+        
+        for(int i=0;i<LOOP_MAX;i++)
+        {
+            if(inter.happened==true)
+            {
+                vec3 w_out=-ray.direction;
+                if(inter.material_id==0)
+                {
+                    if(i==0)
+                    {
+                        light=materials[0].albedo;
+                        break;
+                    }
+                }
+                else
+                {
+                    Intersect inter_light=sampleLight(inter,state);
+                    if(inter_light.happened)
+                    {
+                        light+=attenuation*getDirLight(inter,inter_light,w_out);
+                    }
+                }
+                
+                if(getRandom(state)<1.-roussian_roulette)
+                break;
+                
+                //generate ray
+                ray.origin=inter.position;
+                vec3 H=importanceSample(inter.normal,state,materials[inter.material_id].roughness);
+                ray.direction=normalize(2.*dot(w_out,H)*H-w_out);
+                ray.direction_inv=inverseVec3(ray.direction);
+                
+                if(dot(ray.direction,inter.normal)<-EPS)
+                break;
+                attenuation*=getAttenuation(ray.direction,w_out,inter.normal,inter.material_id);
+                attenuation/=roussian_roulette;
+                
+                inter=get_intersect_BVH(ray);
+            }
+            else
+            {
+                break;
+            }
+        }
+        light_total+=light;
+    }
+    light_total=light_total/spp;
+    imageStore(color_out,pixel_coords,vec4(light_total,1.));
+    // imageStore(color_out,pixel_coords,vec4(vec3(bvhs[3].triangle_list[0]-24,0.,0.),1.));
+}

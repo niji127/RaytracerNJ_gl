@@ -1,0 +1,127 @@
+#version 460 core
+layout(local_size_x=16,local_size_y=16,local_size_z=1)in;
+layout(rgba32f,binding=0)uniform image2D color_in;
+layout(rgba32f,binding=1)uniform image2D normal_in;
+layout(rgba32f,binding=2)uniform image2D position_in;
+layout(rgba32f,binding=3)uniform image2D previous_screen;
+layout(rgba32f,binding=4)uniform image2D previous_position;
+layout(rgba32f,binding=5)uniform image2D previous_normal;
+layout(rgba32f,binding=6)uniform image2D screen_out;
+
+uniform bool camera_move;
+uniform uint iter;
+uniform mat4 transform;
+const float mix_coef=.8;
+
+float gaussian(float x,float sigma)
+{
+    return exp(-(x*x)/(2.*sigma*sigma));
+}
+
+void main(void)
+{
+    ivec2 dims=imageSize(color_in);
+    if(gl_GlobalInvocationID.x>=dims.x||gl_GlobalInvocationID.y>=dims.y)
+    return;
+    ivec2 pixel_coords=ivec2(gl_GlobalInvocationID.xy);
+    vec4 pixel=imageLoad(color_in,pixel_coords);
+    vec4 normal=imageLoad(normal_in,pixel_coords);
+    
+    float sigma_spatial=100.;
+    float sigma_color=100.;
+    float sigma_normal=.1;
+    float sigma_depth=10.;
+    
+    int kernel_size=8;
+    int half_kernel=kernel_size/2;
+    
+    vec3 result=vec3(0.);
+    float weight_sum=.0001;
+    
+    vec3 EX=vec3(0.);
+    vec3 EX2=vec3(0.);
+    for(int i=-half_kernel;i<=half_kernel;++i)
+    {
+        for(int j=-half_kernel;j<=half_kernel;++j)
+        {
+            ivec2 current_pixel=pixel_coords+ivec2(i,j);
+            vec3 bright=min(imageLoad(color_in,pixel_coords).rgb,vec3(1.));
+            EX+=bright;
+            EX+=bright*bright;
+        }
+    }
+    float num=float(half_kernel)*2+1.;
+    EX/=num;
+    EX2/=num;
+    vec3 variance=sqrt(EX*EX-EX2);
+    
+    vec3 center_color=clamp(imageLoad(color_in,pixel_coords).rgb,EX-variance,EX+variance);
+    for(int i=-half_kernel;i<=half_kernel;++i)
+    {
+        for(int j=-half_kernel;j<=half_kernel;++j)
+        {
+            ivec2 current_pixel=pixel_coords+ivec2(i,j);
+            if(current_pixel.x>=0&&current_pixel.x<dims.x&&current_pixel.y>=0&&current_pixel.y<dims.y)
+            {
+                vec3 current_color=clamp(imageLoad(color_in,current_pixel).rgb,EX-variance,EX+variance);
+                float color_diff=length(current_color-center_color);
+                
+                float normal_diff=length(normal.xyz-imageLoad(normal_in,current_pixel).xyz);
+                float depth_diff=normal.w-imageLoad(normal_in,current_pixel).w;
+                
+                float color_weight=gaussian(color_diff,sigma_color);
+                float normal_weight=gaussian(normal_diff,sigma_normal);
+                float depth_weight=gaussian(depth_diff,sigma_depth);
+                float spatial_weight=gaussian(sqrt(float(i*i+j*j)),sigma_spatial);
+                
+                float weight=spatial_weight*normal_weight*color_weight*depth_weight;
+                
+                result+=current_color*weight;
+                weight_sum+=weight;
+            }
+        }
+    }
+    
+    result/=weight_sum;
+    vec3 previous_color;
+    
+    if(camera_move)
+    {
+        vec4 current_pos=imageLoad(position_in,pixel_coords);
+        if(current_pos.w==0.)
+        {
+            imageStore(screen_out,pixel_coords,vec4(0.));
+            return;
+        }
+        vec4 previous_pixel=transform*current_pos;
+        previous_pixel/=previous_pixel.w;
+        previous_pixel.xy=.5*(vec2(previous_pixel.xy)+1.)*vec2(dims);
+        
+        if(previous_pixel.x<=0.||previous_pixel.x>=float(dims.x)||previous_pixel.y<=0.||previous_pixel.y>=float(dims.y))
+        {
+            imageStore(screen_out,pixel_coords,vec4(result,1.));
+            return;
+        }
+        vec3 previous_pos=imageLoad(previous_position,ivec2(previous_pixel.xy)).xyz;
+        if(length(previous_pos-current_pos.xyz)>10.)
+        {
+            imageStore(screen_out,pixel_coords,vec4(result,1.));
+            return;
+        }
+        vec3 previous_N=imageLoad(previous_normal,ivec2(previous_pixel.xy)).xyz;
+        if(length(previous_N-normal.xyz)>0.1)
+        {
+            imageStore(screen_out,pixel_coords,vec4(result,1.));
+            return;
+        }
+        previous_color=imageLoad(previous_screen,ivec2(previous_pixel.xy)).rgb;
+        imageStore(screen_out,pixel_coords,vec4(previous_color*mix_coef+result*(1.-mix_coef),1.));
+    }
+    else
+    {
+        previous_color=imageLoad(screen_out,pixel_coords).rgb;
+        vec3 color=float(iter)*previous_color+result;
+        color/=1.+float(iter);
+        imageStore(screen_out,pixel_coords,vec4(color,1.));
+    }
+}

@@ -8,13 +8,13 @@ real time ray tracing renderer based on opengl
 - BVH acceleration structure
 - PBR materials
 - Spatial denoising using Joint Bilateral filtering (depth,normal,color) 
-- Temporal denoising using back projection
+- Temporal denoising using back projection (position,normal)
 - Detection of the reused pixel to reduce lagging 
 - .obj model
 ### Control:
 - **WASD** moving positon
-- **mouse** change yaw and pitch
-- **scroll** change FOV
+- **Mouse** change yaw and pitch
+- **Scroll** change FOV
 ### Examples:
 #### Direct Illumination
 <img width="962" alt="direct_illumination" src="https://github.com/niji127/RaytracerNJ_gl/assets/152270816/c05c3c7d-475c-4e4b-a29c-426ddbe6b4cc"><br>

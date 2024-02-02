@@ -24,6 +24,3 @@ real time ray tracing renderer based on opengl
 <img width="962" alt="global_illumination" src="https://github.com/niji127/RaytracerNJ_gl/assets/152270816/948d0bcf-3bb6-4e6b-a7ac-b483c1acdb4f"><br>
 #### 15fps on RTX4060 laptop / 65.6k triangles / 720p / Russian_Roulette=0.8
 ![record](https://github.com/niji127/RaytracerNJ_gl/assets/152270816/6cbdc754-529a-4364-98ec-e20a481c7e8f)
-<br>
-#### 15fps on RTX4060 laptop / 65.6k triangles / 720p / Russian_Roulette=0.8
-![output_video](https://github.com/niji127/RaytracerNJ_gl/assets/152270816/9eca9dd7-bdca-40d1-b663-65a484b4165e)

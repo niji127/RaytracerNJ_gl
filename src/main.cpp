@@ -10,7 +10,7 @@ int main()
 {
     initiate_glfw(4, 6, 4);
 
-    Screen screen(1280, 720);
+    Screen screen(1280,720);
     screen.createWindow();
     Camera *camera = screen.getCamera();
     GLFWwindow *window = screen.window;
@@ -33,16 +33,28 @@ int main()
     Triangle_List triangle_list;
 
     triangle_list.loadObject("../model/light.obj", LIGHT);
-    triangle_list.loadObject("../model/wall.obj", WHITE);
+    triangle_list.loadObject("../model/wall.obj", MIRROR);
     triangle_list.loadObject("../model/left.obj", BLUE);
     triangle_list.loadObject("../model/right.obj", ORANGE);
     // triangle_list.loadObject("../model/tallbox.obj", GOLD);
     // triangle_list.loadObject("../model/shortbox.obj", GOLD);
-    triangle_list.loadObject("../model/floor.obj", TITAN);
+    triangle_list.loadObject("../model/floor.obj", WHITE);
 
     glm::mat4 model = glm::mat4(1.0f);
-    model = glm::translate(model, glm::vec3(275.6f, -10.0f, 279.6f));
-    model = glm::scale(model, glm::vec3(1000.0f));
+    model = glm::translate(model, glm::vec3(80.0f, -10.0f, 279.6f));
+    model = glm::scale(model, glm::vec3(900.0f));
+    model = glm::rotate(model, glm::radians(180.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+    triangle_list.loadObject("../model/bunny.obj", BROWN, model);
+
+    model = glm::mat4(1.0f);
+    model = glm::translate(model, glm::vec3(250.0f, -10.0f, 279.6f));
+    model = glm::scale(model, glm::vec3(900.0f));
+    model = glm::rotate(model, glm::radians(180.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+    triangle_list.loadObject("../model/bunny.obj", GREEN, model);
+
+    model = glm::mat4(1.0f);
+    model = glm::translate(model, glm::vec3(420.0f, -10.0f, 279.6f));
+    model = glm::scale(model, glm::vec3(900.0f));
     model = glm::rotate(model, glm::radians(180.0f), glm::vec3(0.0f, 1.0f, 0.0f));
     triangle_list.loadObject("../model/bunny.obj", GOLD, model);
 

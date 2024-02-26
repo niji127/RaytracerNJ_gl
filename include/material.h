@@ -8,25 +8,64 @@ enum Material_Type
     WHITE,
     BLUE,
     ORANGE,
+    BROWN,
     GOLD,
-    TITAN
+    GREEN,
+    MIRROR
 };
 
 class Material
 {
 public:
-    glm::vec3 albedo;
+    glm::vec3 baseColor;
+    float subsurface;
+
     float metallic;
+    float specular;
+    float specularTint;
     float roughness;
-    float a[3];
+
+    float anistropic;
+    float sheen;
+    float sheenTint;
+    float clearcoat;
+
+    float clearcoatGloss;
+    float offset[3];
     Material()
     {
-        albedo = glm::vec3(0.0f);
+        baseColor = glm::vec3(1.0f);
+        subsurface = 0.0f;
+
         metallic = 0.0f;
-        roughness = 0.0f;
+        specular = 0.5f;
+        specularTint = 0.0f;
+        roughness = 0.5f;
+
+        anistropic = 0.0f;
+        sheen = 0.0f;
+        sheenTint = 0.5f;
+        clearcoat = 0.0f;
+
+        clearcoatGloss = 1.0f;
     }
-    Material(const glm::vec3&color,float metal,float rough)
-    :albedo(color),metallic(metal),roughness(rough){}
+    Material(const glm::vec3 &color)
+        : baseColor(color)
+    {
+        metallic = 0.0f;
+
+        subsurface = 0.0f;
+        specular = 0.5f;
+        specularTint = 0.0f;
+        roughness = 0.5f;
+
+        anistropic = 0.0f;
+        sheen = 0.0f;
+        sheenTint = 0.5f;
+        clearcoat = 0.0f;
+
+        clearcoatGloss = 1.0f;
+    }
 };
 
 class Material_List
@@ -42,15 +81,52 @@ public:
         glm::vec3 white = glm::vec3(0.725f, 0.71f, 0.68f);
         glm::vec3 blue = glm::vec3(0.075f, 0.404f, 1.0f);
         glm::vec3 orange = glm::vec3(1.0f, 0.125f, 0.0f);
+        glm::vec3 brown = glm::vec3(0.196f, 0.122f, 0.125f);
         glm::vec3 gold = glm::vec3(1.0f, 0.766f, 0.336f);
-        glm::vec3 titan = glm::vec3(0.542f, 0.497f, 0.449f);
+        glm::vec3 green = glm::vec3(0.333f, 0.420f, 0.184f);
+        glm::vec3 mirror = glm::vec3(1.0f, 1.0f, 1.0f);
 
-        materials.push_back(Material(light, 0.0f, 1.0f));
-        materials.push_back(Material(white, 0.0f, 0.1f));
-        materials.push_back(Material(blue, 0.0f, 1.0f));
-        materials.push_back(Material(orange, 0.0f, 1.0f));
-        materials.push_back(Material(gold, 1.0f, 0.3f));
-        materials.push_back(Material(titan, 1.0f, 0.1f));
+        Material light_material(light);
+        materials.push_back(light_material);
+
+        Material white_material(white);
+        white_material.roughness = 1.0f;
+        materials.push_back(white_material);
+
+        Material blue_material(blue);
+        blue_material.roughness = 1.0f;
+        materials.push_back(blue_material);
+
+        Material orange_material(orange);
+        orange_material.roughness = 1.0f;
+        materials.push_back(orange_material);
+
+        Material brown_material(brown);
+        brown_material.subsurface = 1.0f;
+        brown_material.specular = 0.0f;
+        brown_material.roughness = 1.0f;
+        brown_material.sheen = 1.0f;
+        brown_material.sheenTint = 1.0f;
+        materials.push_back(brown_material);
+
+        Material gold_material(gold);
+        gold_material.metallic = 1.0f;
+        gold_material.specular = 1.0f;
+        gold_material.roughness = 0.2f;
+        gold_material.anistropic = 1.0f;
+        materials.push_back(gold_material);
+
+        Material green_material(green);
+        green_material.specular = 1.0f;
+        green_material.roughness = 0.3f;
+        green_material.clearcoat = 1.0f;
+        materials.push_back(green_material);
+
+        Material mirror_material(mirror);
+        mirror_material.metallic = 1.0f;
+        mirror_material.specular = 1.0f;
+        mirror_material.roughness = 0.1f;
+        materials.push_back(mirror_material);
     }
 };
 

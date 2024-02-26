@@ -680,10 +680,8 @@ void main(void)
                 if(inter.material_id==0)
                 {
                     if(i==0)
-                    {
                         light=materials[0].baseColor;
-                        break;
-                    }
+                    break;
                 }
                 else
                 {

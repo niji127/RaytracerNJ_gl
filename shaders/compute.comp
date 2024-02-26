@@ -8,16 +8,28 @@ uniform float FOV;
 
 const float PI=3.1415926f;
 const float EPS=.001f;
-const int LOOP_MAX=1000;
-const float roussian_roulette=0.8;
+const int MAX_LOOP=1000;
+const float roussian_roulette=.8;
 const int spp=1;
 const uint BVH_MAX_TRI=3;
 
 struct Material
 {
-    vec3 albedo;
+    vec3 baseColor;
+    float subsurface;
+    
     float metallic;
+    float specular;
+    float specularTint;
     float roughness;
+    
+    float anistropic;
+    float sheen;
+    float sheenTint;
+    float clearcoat;
+    
+    float clearcoatGloss;
+    float offset[3];
 };
 
 struct Point
@@ -86,21 +98,32 @@ vec3 inverseVec3(vec3 dir)
     vec3 dir_inv;
     
     if(dir.x==0.)
-    dir_inv.x=0.;
+    dir_inv.x=EPS/dir.x;
     else
     dir_inv.x=1./dir.x;
     
     if(dir.y==0.)
-    dir_inv.y=0.;
+    dir_inv.y=EPS/dir.y;
     else
     dir_inv.y=1./dir.y;
     
     if(dir.z==0.)
-    dir_inv.z=0.;
+    dir_inv.z=EPS/dir.z;
     else
     dir_inv.z=1./dir.z;
     
     return dir_inv;
+}
+
+float sqr(float val)
+{
+    return val*val;
+}
+
+float sqr5(float val)
+{
+    float val2=val*val;
+    return val2*val2*val;
 }
 
 struct Ray
@@ -124,7 +147,7 @@ Intersect intersectTriangle(Ray ray,int triangle_id)
     inter.normal=vec3(0.);
     
     Triangle triangle=triangles[triangle_id];
-    if(dot(ray.direction,triangle.normal)>EPS)
+    if(dot(ray.direction,triangle.normal)>0.)
     {
         return inter;
     }
@@ -151,8 +174,9 @@ Intersect intersectTriangle(Ray ray,int triangle_id)
     }
     
     inter.normal=triangle.point[0].normal*b0+triangle.point[1].normal*b1+triangle.point[2].normal*b2;
+    inter.normal=normalize(inter.normal);
     
-    if(dot(ray.direction,inter.normal)>0.0)
+    if(dot(ray.direction,inter.normal)>0.)
     {
         return inter;
     }
@@ -206,59 +230,6 @@ bool is_intersect(Ray ray,uint bvh_id)
     
     float t_enter=max(tmin.x,max(tmin.y,tmin.z));
     float t_exit=min(tmax.x,min(tmax.y,tmax.z));
-    
-    if(ray.direction.x==0.f)
-    {
-        if(ray.origin.x>bvh.pos_max.x+EPS||ray.origin.x<bvh.pos_min.x-EPS)
-        return false;
-    }
-    if(ray.direction.y==0.f)
-    {
-        if(ray.origin.y>bvh.pos_max.y+EPS||ray.origin.y<bvh.pos_min.y-EPS)
-        return false;
-    }
-    if(ray.direction.z==0.f)
-    {
-        if(ray.origin.z>bvh.pos_max.z+EPS||ray.origin.z<bvh.pos_min.z-EPS)
-        return false;
-    }
-    
-    if(ray.direction.x==0.f)
-    {
-        if(ray.direction.y==0.f)
-        {
-            t_enter=tmin.z;
-            t_exit=tmax.z;
-        }
-        else if(ray.direction.z==0.f)
-        {
-            t_enter=tmin.y;
-            t_exit=tmax.y;
-        }
-        else
-        {
-            t_enter=max(tmin.y,tmin.z);
-            t_exit=min(tmax.y,tmax.z);
-        }
-    }
-    else if(ray.direction.y==0.f)
-    {
-        if(ray.direction.z==0.f)
-        {
-            t_enter=tmin.x;
-            t_exit=tmax.x;
-        }
-        else
-        {
-            t_enter=max(tmin.x,tmin.z);
-            t_exit=min(tmax.x,tmax.z);
-        }
-    }
-    else if(ray.direction.z==0.f)
-    {
-        t_enter=max(tmin.x,tmin.y);
-        t_exit=min(tmax.x,tmax.y);
-    }
     
     if(t_enter>t_exit+EPS||t_exit<-EPS)
     return false;
@@ -342,129 +313,322 @@ Intersect sampleLight(Intersect inter,inout uint state)
     return inter_light;
 }
 
-float DistributionGGX(vec3 N,vec3 H,float roughness)
+float GTR1(float NdotH,float a)
 {
-    float a=roughness*roughness;
     float a2=a*a;
-    float NdotH=max(dot(N,H),0.);
-    float NdotH2=NdotH*NdotH;
-    
-    float nom=a2;
-    float denom=(NdotH2*(a2-1.)+1.);
-    denom=PI*denom*denom;
-    
-    return nom/denom;
+    NdotH=min(NdotH,1.-EPS);
+    float t=1+(a2-1)*NdotH*NdotH;
+    return(a2-1)/(PI*log(a2)*t);
 }
 
-float GeometrySchlickGGX(float NdotV,float roughness)
+float GTR2(float NdotH,float a)
 {
-    float r=(roughness+1.);
-    float k=(r*r)/8.;
-    float nom=max(NdotV,0.);
-    float denom=NdotV*(1.-k)+k;
+    a=max(a,EPS);
+    float a2=a*a;
+    float t=1+(a2-1)*NdotH*NdotH;
+    return a2/(PI*t*t);
+}
+
+float GTR2_aniso(float NdotH,float HdotX,float HdotY,float ax,float ay)
+{
+    ax=max(ax,EPS);
+    ay=max(ay,EPS);
+    return 1/(PI*ax*ay*sqr(sqr(HdotX/ax)+sqr(HdotY/ay)+NdotH*NdotH));
+}
+
+vec3 get_aniso_Y(vec3 N)
+{
+    vec3 Up=vec3(0.,0.,1.);
+    float NdotUp=dot(N,Up);
+    vec3 Y;
+    if(NdotUp>1.-EPS||NdotUp<-1.+EPS)
+    Y=vec3(1.,0.,0.);
+    else
+    Y=normalize(Up-dot(N,Up)*N);
+    return Y;
+}
+
+float smith_GGX_aniso(float NdotV,float VdotX,float VdotY,float ax,float ay)
+{
+    ax=max(ax,EPS);
+    ay=max(ay,EPS);
+    return 2.*NdotV/(NdotV+sqrt(sqr(VdotX*ax)+sqr(VdotY*ay)+sqr(NdotV)));
+}
+
+float smith_GGX_iso(float NdotV,float a)
+{
+    a=max(a,EPS);
+    float a2=sqr(a);
+    return 2.*NdotV/(NdotV+sqrt(a2+(1.-a2)*sqr(NdotV)));
+}
+
+vec3 fresnelSchlick(float cosTheta,vec3 Cs)
+{
+    return Cs+(1.-Cs)*sqr5(clamp(1.-cosTheta,0.,1.));
+}
+
+vec3 getBRDF(vec3 w_in,vec3 w_out,vec3 N,vec3 X,vec3 Y,int material_id)
+{
+    // Variables
+    float in_dot_N=dot(w_in,N);
+    float out_dot_N=dot(w_out,N);
     
-    return nom/denom;
-}
-
-float GeometrySmith(vec3 N,vec3 V,vec3 L,float roughness)
-{
-    float NdotV=max(dot(N,V),0.);
-    float NdotL=max(dot(N,L),0.);
-    float ggx2=GeometrySchlickGGX(NdotV,roughness);
-    float ggx1=GeometrySchlickGGX(NdotL,roughness);
+    if(in_dot_N<0.||out_dot_N<.0)
+    return vec3(0.);
     
-    return ggx1*ggx2;
-}
-
-vec3 fresnelSchlick(float cosTheta,vec3 F0)
-{
-    return F0+(1.-F0)*pow(clamp(1.-cosTheta,0.,1.),5.);
-}
-
-vec3 getBRDF(vec3 w_in,vec3 w_out,vec3 N,int material_id)
-{
-    vec3 albedo=materials[material_id].albedo;
+    vec3 H=normalize(w_in+w_out);
+    float N_dot_H=max(dot(N,H),0.);
+    float in_dot_H=max(dot(w_in,H),0.);
+    
+    // Mateiral
+    vec3 color=materials[material_id].baseColor;
+    float subsurface_coef=materials[material_id].subsurface;
+    
     float metallic=materials[material_id].metallic;
+    float specular_coef=materials[material_id].specular;
+    float specular_tint=materials[material_id].specularTint;
     float roughness=materials[material_id].roughness;
     
-    // Specular
-    vec3 F0=vec3(.04);
-    F0=mix(F0,materials[material_id].albedo,metallic);
-    vec3 H=normalize(w_in+w_out);
-    vec3 F=fresnelSchlick(max(dot(w_out,H),0.),F0);
-    float D=DistributionGGX(N,H,roughness);
-    float G=GeometrySmith(N,w_out,w_in,roughness);
-    vec3 specular=F*D*G;
-    specular/=4.*max(dot(w_out,N),0.)*max(dot(w_in,N),0.)+.00001;
+    float anistropic=materials[material_id].anistropic;
+    float sheen_coef=materials[material_id].sheen;
+    float sheen_tint=materials[material_id].sheenTint;
+    float clearcoat_coef=materials[material_id].clearcoat;
+    
+    float clearcoat_gloss=materials[material_id].clearcoatGloss;
     
     // Diffuse
-    vec3 kD=(1.-F)*(1.-metallic);
-    vec3 diffuse=kD*albedo/PI;
+    float FD90=.5+2.*roughness*sqr(in_dot_H);
+    float diffuse_in=1.+(FD90-1.)*sqr5(in_dot_N);
+    float diffuse_out=1.+(FD90-1.)*sqr5(out_dot_N);
+    float diffuse=diffuse_in*diffuse_out;
     
-    return diffuse+specular;
+    // Subsurface
+    float fss_90=roughness*sqr(in_dot_H);
+    float fss_in=1.+(fss_90-1.)*sqr5(in_dot_N);
+    float fss_out=1.+(fss_90-1.)*sqr5(out_dot_N);
+    float fss=fss_in*fss_out;
+    float subsurface=1.25*(fss*(1./(in_dot_N+out_dot_N)-.5)+.5);
+    
+    // Sheen
+    float lumc=.2126*color.r+.7152*color.g+.0722*color.b;
+    vec3 ctint;
+    if(lumc==0.)
+    ctint=vec3(0.);
+    else
+    ctint=color/lumc;
+    vec3 sheen=mix(vec3(1.),ctint,sheen_tint)*sheen_coef*sqr5(1.-in_dot_H);
+    
+    // Specular
+    vec3 Cs=mix(.08*specular_coef*mix(vec3(1.),ctint,specular_tint),color,metallic);
+    vec3 Fs=fresnelSchlick(in_dot_H,Cs);
+    
+    float aspect=sqrt(1.-.9*anistropic);
+    float ax=sqr(roughness)/aspect;
+    float ay=sqr(roughness)*aspect;
+    float Ds=GTR2_aniso(N_dot_H,dot(H,X),dot(H,Y),ax,ay);
+    
+    float Gs=smith_GGX_aniso(out_dot_N,dot(w_out,X),dot(w_out,Y),ax,ay);
+    Gs*=smith_GGX_aniso(in_dot_N,dot(w_in,X),dot(w_in,Y),ax,ay);
+    
+    vec3 specular=Fs*Ds*Gs;
+    specular/=4.*in_dot_N*out_dot_N+EPS;
+    
+    // Clearcoat
+    vec3 Fc=fresnelSchlick(in_dot_H,vec3(.04));
+    float Dc=GTR1(N_dot_H,mix(.1,.001,clearcoat_gloss));
+    float Gc=smith_GGX_iso(out_dot_N,.25)*smith_GGX_iso(in_dot_N,.25);
+    vec3 clearcoat=clearcoat_coef*Fc*Dc*Gc;
+    clearcoat/=16.*in_dot_N*out_dot_N+EPS;
+    
+    return(1.-metallic)*(color/PI*mix(diffuse,subsurface,subsurface_coef)+sheen)+specular+clearcoat;
+}
+
+vec3 sample_cos(vec3 N,inout uint state)
+{
+    vec2 Xi;
+    Xi.x=getRandom(state);
+    Xi.y=getRandom(state);
+    
+    float cosPhi=cos(2.*PI*Xi.x);
+    float sinPhi=sin(2.*PI*Xi.x);
+    float cosTheta=sqrt(1.-Xi.y);
+    float sinTheta=sqrt(1.-cosTheta*cosTheta);
+    
+    vec3 H;
+    H.x=cosPhi*sinTheta;
+    H.y=sinPhi*sinTheta;
+    H.z=cosTheta;
+    
+    vec3 Y=get_aniso_Y(N);
+    vec3 X=normalize(cross(Y,N));
+    
+    vec3 sampleVec=X*H.x+Y*H.y+N*H.z;
+    return normalize(sampleVec);
+}
+
+vec3 sample_GTR1(vec3 N,inout uint state,int material_id)
+{
+    float roughness=materials[material_id].roughness;
+    float a=clamp(sqr(roughness),.01,.1);
+    float a2=a*a;
+    vec2 Xi;
+    Xi.x=getRandom(state);
+    Xi.y=getRandom(state);
+    
+    float cosPhi=cos(2.*PI*Xi.x);
+    float sinPhi=sin(2.*PI*Xi.x);
+    
+    float nom=pow(a2,1.-Xi.y)-1.;
+    float denom=a2-1.;
+    
+    float cosTheta=sqrt(nom/denom);
+    float sinTheta=sqrt(1.-cosTheta*cosTheta);
+    
+    vec3 H;
+    H.x=cosPhi*sinTheta;
+    H.y=sinPhi*sinTheta;
+    H.z=cosTheta;
+    
+    vec3 Y=get_aniso_Y(N);
+    vec3 X=normalize(cross(Y,N));
+    vec3 sampleVec=X*H.x+Y*H.y+N*H.z;
+    
+    return normalize(sampleVec);
+}
+
+vec3 sample_GTR2_aniso(vec3 N,inout uint state,int material_id)
+{
+    float roughness=materials[material_id].roughness;
+    float anistropic=materials[material_id].anistropic;
+    vec2 Xi;
+    Xi.x=getRandom(state);
+    Xi.y=getRandom(state);
+    
+    float aspect=sqrt(1.-.9*anistropic);
+    float ax=max(EPS,sqr(roughness)/aspect);
+    float ay=max(EPS,sqr(roughness)*aspect);
+    
+    float cosPhi=ax*cos(2.*PI*Xi.x);
+    float sinPhi=ay*sin(2.*PI*Xi.x);
+    float r=sqrt(cosPhi*cosPhi+sinPhi*sinPhi);
+    cosPhi/=r;
+    sinPhi/=r;
+    
+    float PHI_H=sqr(cosPhi/ax)+sqr(sinPhi/ay);
+    float nom=PHI_H*(1.-Xi.y);
+    float denom=(1.-PHI_H)*Xi.y+PHI_H;
+    float cosTheta=sqrt(nom/denom);
+    float sinTheta=sqrt(1.-cosTheta*cosTheta);
+    
+    vec3 H;
+    H.x=cosPhi*sinTheta;
+    H.y=sinPhi*sinTheta;
+    H.z=cosTheta;
+    
+    vec3 Y=get_aniso_Y(N);
+    vec3 X=normalize(cross(Y,N));
+    vec3 sampleVec=X*H.x+Y*H.y+N*H.z;
+    
+    return normalize(sampleVec);
+}
+
+vec3 importanceSample(vec3 N,float in_dot_N,inout uint state,int material_id)
+{
+    vec3 color=materials[material_id].baseColor;
+    float metallic=materials[material_id].metallic;
+    float clearcoat=materials[material_id].clearcoat;
+    float specular_coef=materials[material_id].specular;
+    float specular_tint=materials[material_id].specularTint;
+    
+    float lumc=.2126*color.r+.7152*color.g+.0722*color.b;
+    vec3 ctint;
+    if(lumc==0.)
+    ctint=vec3(0.);
+    else
+    ctint=color/lumc;
+    vec3 Cs=mix(.08*specular_coef*mix(vec3(1.),ctint,specular_tint),color,metallic);
+    vec3 Fs=fresnelSchlick(in_dot_N,Cs);
+    float F=length(Fs);
+    float dif=min(.8,(1.-metallic)*(1.-F));
+    float sp=(1.-dif)*2./(2.+clearcoat);
+    float cl=(1.-dif)*clearcoat/(2.+clearcoat);
+    
+    float sample_type=getRandom(state);
+    if(sample_type<dif)
+    return sample_cos(N,state);
+    else if(sample_type<dif+sp)
+    return sample_GTR2_aniso(N,state,material_id);
+    else
+    return sample_GTR1(N,state,material_id);
+}
+
+vec3 getAttenuation(vec3 w_in,vec3 w_out,vec3 N,int material_id)
+{
+    // Variables
+    vec3 H=normalize(w_in+w_out);
+    float N_dot_H=max(dot(N,H),0.);
+    float in_dot_N=max(dot(w_in,N),0.);
+    float out_dot_N=max(dot(w_out,N),0.);
+    float in_dot_H=max(dot(w_in,H),0.);
+    
+    vec3 color=materials[material_id].baseColor;
+    float specular_coef=materials[material_id].specular;
+    float specular_tint=materials[material_id].specularTint;
+    
+    float metallic=materials[material_id].metallic;
+    float roughness=materials[material_id].roughness;
+    float anistropic=materials[material_id].anistropic;
+    float clearcoat=materials[material_id].clearcoat;
+    float clearcoat_gloss=materials[material_id].clearcoatGloss;
+    
+    vec3 Y=get_aniso_Y(N);
+    vec3 X=normalize(cross(Y,N));
+    vec3 brdf=getBRDF(w_in,w_out,N,X,Y,material_id);
+    vec3 t_color=brdf*in_dot_N;
+    
+    float lumc=.2126*color.r+.7152*color.g+.0722*color.b;
+    vec3 ctint;
+    if(lumc==0.)
+    ctint=vec3(0.);
+    else
+    ctint=color/lumc;
+    vec3 Cs=mix(.08*specular_coef*mix(vec3(1.),ctint,specular_tint),color,metallic);
+    vec3 Fs=fresnelSchlick(in_dot_N,Cs);
+    float F=length(Fs);
+    
+    float dif=min(.8,(1.-metallic)*(1.-F));
+    float sp=(1.-dif)*2./(2.+clearcoat);
+    float cl=(1.-dif)*clearcoat/(2.+clearcoat);
+    
+    float p_dif=N_dot_H/PI;
+    
+    float aspect=sqrt(1.-.9*anistropic);
+    float ax=sqr(roughness)/aspect;
+    float ay=sqr(roughness)*aspect;
+    float Ds=GTR2_aniso(N_dot_H,dot(H,X),dot(H,Y),ax,ay);
+    float p_sp=Ds*N_dot_H;
+    
+    float Dc=GTR1(N_dot_H,mix(.1,.001,clearcoat_gloss));
+    float p_cl=Dc*N_dot_H;
+    
+    float p=dif*p_dif+sp*p_sp+cl*p_cl;
+    p/=4.*in_dot_H;
+    
+    return t_color/p;
 }
 
 vec3 getDirLight(Intersect inter,Intersect inter_light,vec3 w_out)
 {
     vec3 dir=normalize(inter_light.position-inter.position);
-    vec3 brdf=getBRDF(w_out,dir,inter.normal,inter.material_id);
+    
+    vec3 N=inter.normal;
+    vec3 Y=get_aniso_Y(N);
+    vec3 X=normalize(cross(Y,N));
+    vec3 brdf=getBRDF(w_out,dir,N,X,Y,inter.material_id);
     float dis=length(inter_light.position-inter.position);
-    vec3 light_dir=materials[0].albedo*brdf*max(dot(dir,inter.normal),0.)*max(dot(-dir,inter_light.normal),0.);
+    vec3 light_dir=materials[0].baseColor*brdf*max(dot(dir,inter.normal),0.)*max(dot(-dir,inter_light.normal),0.);
     light_dir/=dis*dis;
     return light_dir*light_area;
-}
-
-vec3 importanceSample(vec3 N,inout uint state,float roughness)
-{
-    float a=roughness*roughness;
-    vec2 Xi;
-    Xi.x=getRandom(state);
-    Xi.y=getRandom(state);
-    
-    float phi=2.*PI*Xi.x;
-    float cosTheta=sqrt((1.-Xi.y)/(1.+(a*a-1.)*Xi.y));
-    float sinTheta=sqrt(1.-cosTheta*cosTheta);
-    
-    vec3 H;
-    H.x=cos(phi)*sinTheta;
-    H.y=sin(phi)*sinTheta;
-    H.z=cosTheta;
-    
-    vec3 up=abs(N.z)<.999?vec3(0.,0.,1.):vec3(1.,0.,0.);
-    vec3 tangent=normalize(cross(up,N));
-    vec3 bitangent=cross(N,tangent);
-    
-    vec3 sampleVec=tangent*H.x+bitangent*H.y+N*H.z;
-    return normalize(sampleVec);
-}
-
-vec3 getAttenuation(vec3 w_in,vec3 w_out,vec3 N,int material_id)
-{
-    vec3 albedo=materials[material_id].albedo;
-    float metallic=materials[material_id].metallic;
-    float roughness=materials[material_id].roughness;
-    
-    // Specular
-    vec3 F0=vec3(.04);
-    F0=mix(F0,materials[material_id].albedo,materials[material_id].metallic);
-    vec3 H=normalize(w_in+w_out);
-    vec3 F=fresnelSchlick(max(dot(w_out,H),0.),F0);
-    float D=DistributionGGX(N,H,roughness);
-    float G=GeometrySmith(N,w_out,w_in,roughness);
-    
-    float VdotH=max(dot(w_out,H),0.);
-    float NdotH=max(dot(N,H),0.);
-    float NdotV=max(dot(N,w_out),0.);
-    vec3 specular=(F*G*VdotH)/(NdotH*NdotV);
-    
-    // Diffuse
-    vec3 kD=(1.-F)*(1.-metallic);
-    float NdotL=max(dot(N,w_in),0.);
-    vec3 diffuse=kD*albedo/PI;
-    diffuse*=4.*VdotH*NdotL;
-    diffuse/=D*NdotH;
-    
-    return specular+diffuse;
 }
 
 void main(void)
@@ -508,7 +672,7 @@ void main(void)
         imageStore(normal_out,pixel_coords,normal_depth);
         imageStore(position_out,pixel_coords,pos_out);
         
-        for(int i=0;i<LOOP_MAX;i++)
+        for(int i=0;i<2;i++)
         {
             if(inter.happened==true)
             {
@@ -517,7 +681,7 @@ void main(void)
                 {
                     if(i==0)
                     {
-                        light=materials[0].albedo;
+                        light=materials[0].baseColor;
                         break;
                     }
                 }
@@ -535,11 +699,13 @@ void main(void)
                 
                 //generate ray
                 ray.origin=inter.position;
-                vec3 H=importanceSample(inter.normal,state,materials[inter.material_id].roughness);
+                float in_dot_N=max(dot(w_out,inter.normal),0.);
+                
+                vec3 H=importanceSample(inter.normal,in_dot_N,state,inter.material_id);
                 ray.direction=normalize(2.*dot(w_out,H)*H-w_out);
                 ray.direction_inv=inverseVec3(ray.direction);
                 
-                if(dot(ray.direction,inter.normal)<-EPS)
+                if(dot(ray.direction,inter.normal)<0.)
                 break;
                 attenuation*=getAttenuation(ray.direction,w_out,inter.normal,inter.material_id);
                 attenuation/=roussian_roulette;
@@ -555,5 +721,4 @@ void main(void)
     }
     light_total=light_total/spp;
     imageStore(color_out,pixel_coords,vec4(light_total,1.));
-    // imageStore(color_out,pixel_coords,vec4(vec3(bvhs[3].triangle_list[0]-24,0.,0.),1.));
 }

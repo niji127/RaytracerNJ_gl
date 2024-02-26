@@ -4,9 +4,9 @@ real time ray tracing renderer based on opengl
 - OpenGL4.6 based
 - Path tracing
 - Russian roulette
-- Sample light source
+- Importance Sampling
 - BVH acceleration structure
-- PBR materials
+- Disney BRDF
 - Spatial denoising using Joint Bilateral filtering (depth,normal,color) 
 - Temporal denoising using back projection (position,normal)
 - Detection of the reused pixel to reduce lagging 
@@ -16,11 +16,6 @@ real time ray tracing renderer based on opengl
 - **Mouse** change yaw and pitch
 - **Scroll** change FOV
 ### Examples:
-#### Direct Illumination
-<img width="962" alt="direct_illumination" src="https://github.com/niji127/RaytracerNJ_gl/assets/152270816/c05c3c7d-475c-4e4b-a29c-426ddbe6b4cc"><br>
-#### 1 bounce
-<img width="962" alt="1_bounce" src="https://github.com/niji127/RaytracerNJ_gl/assets/152270816/2f44e211-16c2-44d2-94f9-91953a1c47cb"><br>
-#### Global Illumination
-<img width="962" alt="global_illumination" src="https://github.com/niji127/RaytracerNJ_gl/assets/152270816/948d0bcf-3bb6-4e6b-a7ac-b483c1acdb4f"><br>
-#### 15fps on RTX4060 laptop / 65.6k triangles / 720p / Russian_Roulette=0.8
-![record](https://github.com/niji127/RaytracerNJ_gl/assets/152270816/6cbdc754-529a-4364-98ec-e20a481c7e8f)
+<img width="629" alt="屏幕截图 2024-02-26 220359" src="https://github.com/niji127/RaytracerNJ_gl/assets/152270816/00f82077-9018-4810-8e4f-1d26acd4ef12"><br>
+![gold_bunny](https://github.com/niji127/RaytracerNJ_gl/assets/152270816/b367c98c-954f-4146-85f5-f9a0c60f357c)
+
